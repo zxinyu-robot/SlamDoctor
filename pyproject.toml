@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "esis-diagnostics"
+version = "0.1.0"
+description = "Explainable layered diagnostics CLI for robot sensors and localization systems"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "ESIS Contributors" }]
+keywords = ["robotics", "diagnostics", "slam", "sensors", "cli"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = [
+  "pydantic>=2.7,<3",
+  "PyYAML>=6.0,<7",
+  "rich>=13.7,<15",
+  "typer>=0.12,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "ruff>=0.6,<1"]
+
+[project.scripts]
+esis = "esis.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/esis"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

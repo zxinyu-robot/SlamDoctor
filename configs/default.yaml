@@ -1,0 +1,28 @@
+defaults:
+  frequency_tolerance: 0.25
+  latency_warning_ms: 50
+  latency_critical_ms: 200
+  drop_warning_rate: 0.01
+  drop_critical_rate: 0.05
+  stale_seconds: 2
+  frozen_window: 8
+  frozen_variance: 0.000000001
+  pose_jump_m: 1.5
+  stationary_drift_m: 0.3
+  imu_accel_limit: 160
+  imu_gyro_limit: 35
+  gnss_min_satellites: 6
+  lidar_min_points: 1000
+  camera_min_features: 30
+
+sensors:
+  imu_front:
+    type: imu
+    expected_frequency_hz: 200
+    latency_warning_ms: 10
+    latency_critical_ms: 30
+  localization:
+    type: localization
+    expected_frequency_hz: 20
+    pose_jump_m: 1
+    stationary_drift_m: 0.2
