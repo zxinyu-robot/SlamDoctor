@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "esis-diagnostics"
-version = "0.1.0"
-description = "Explainable layered diagnostics CLI for robot sensors and localization systems"
+version = "0.2.0"
+description = "Executable fault-graph diagnostics for SLAM and robot navigation systems"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
@@ -30,6 +30,7 @@ dev = ["pytest>=8,<9", "ruff>=0.6,<1"]
 
 [project.scripts]
 esis = "esis.cli:app"
+slam-doctor = "esis.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/esis"]

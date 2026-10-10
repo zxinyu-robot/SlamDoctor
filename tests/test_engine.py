@@ -70,3 +70,72 @@ def test_time_regression_contains_evidence() -> None:
     finding = next(item for item in findings if item.code == "TIME_REGRESSION")
     assert finding.evidence[0].metric == "timestamp"
     assert finding.possible_causes
+
+
+def test_slam_quality_and_tf_contracts_are_checked() -> None:
+    engine = DiagnosticEngine()
+    findings = engine.process(
+        Observation(
+            sensor_id="slam",
+            sensor_type="slam",
+            timestamp=1,
+            sequence=1,
+            values={
+                "x": 0,
+                "y": 0,
+                "inlier_ratio": 0.1,
+                "degeneracy_score": 0.95,
+            },
+            metadata={"frame_id": "map", "tf_available": False},
+        )
+    )
+    codes = {finding.code for finding in findings}
+
+    assert {"SLAM_LOW_INLIERS", "SLAM_DEGENERATE", "TF_UNAVAILABLE"} <= codes
+
+
+def test_planner_controller_and_runtime_contracts_are_checked() -> None:
+    engine = DiagnosticEngine()
+    planner = engine.process(
+        Observation(
+            sensor_id="planner",
+            sensor_type="planner",
+            timestamp=1,
+            values={"path_age_ms": 500, "planning_time_ms": 900, "success": False},
+        )
+    )
+    controller = engine.process(
+        Observation(
+            sensor_id="controller",
+            sensor_type="controller",
+            timestamp=1,
+            values={"tracking_error_m": 1.2, "cycle_time_ms": 150, "crashed": True},
+        )
+    )
+    runtime = engine.process(
+        Observation(
+            sensor_id="system",
+            sensor_type="system",
+            timestamp=1,
+            values={
+                "queue_depth": 12,
+                "cpu_percent": 98,
+                "memory_percent": 95,
+                "temperature_c": 90,
+            },
+        )
+    )
+    codes = {item.code for item in planner + controller + runtime}
+
+    assert {
+        "PATH_STALE",
+        "PLANNING_SLOW",
+        "PLANNING_FAILED",
+        "TRACKING_ERROR",
+        "CONTROLLER_CYCLE_MISS",
+        "CONTROLLER_CRASH",
+        "QUEUE_BACKLOG",
+        "CPU_SATURATION",
+        "MEMORY_PRESSURE",
+        "THERMAL_THROTTLE",
+    } <= codes

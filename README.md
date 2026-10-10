@@ -1,19 +1,25 @@
-# ESIS Diagnostics
+# SlamDoctor
 
-ESIS 是一个面向机器人传感器、定位系统和异常行为排查的开源 CLI。它将不同运行时
-的数据统一为观测事件，通过滑动窗口指标、可配置规则和带滞回的状态机生成可解释报告。
+[![CI](https://github.com/zxinyu-robot/SlamDoctor/actions/workflows/ci.yml/badge.svg)](https://github.com/zxinyu-robot/SlamDoctor/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-它适合用于日志回放、现场问题复现、自动化验收和故障根因初筛，不替代 SLAM、标定或
-厂商驱动工具。
+基于接口契约、运行证据和可执行故障图的 SLAM 导航诊断 CLI。
 
-## 能力
+SlamDoctor 将传感器、定位、地图、规划、控制和系统资源观测统一为事件流，检查时间、坐标、频率、序列、数据年龄和质量契约，再依据“症状 → 假设 → Probe → 修复”故障图对根因进行排序。
 
-- 数据完整性：时间倒退、序列乱序、丢帧和数据源停止
-- 实时性：实际频率、P95 延迟和频率漂移
-- 数据质量：数值冻结、IMU 饱和、GNSS 失锁、LiDAR 稀疏、视觉特征不足
-- 定位诊断：静止漂移、位姿跳变和高协方差
-- 可解释结果：实际值、期望阈值和候选原因
-- 输入与输出：JSONL、CSV、标准输入、终端报告和 JSON 报告
+它适合日志回放、现场问题初筛、自动化验收和回归测试，不替代标定、SLAM、控制器或厂商驱动工具。
+
+## 核心能力
+
+- 通用契约：时间倒退、乱序、丢帧、频率、P95 延迟、冻结、离线和 frame 变化。
+- 传感器：IMU 饱和、GNSS 失锁、LiDAR 稀疏、视觉特征不足。
+- SLAM：静止漂移、位姿跳变、高协方差、低 inlier、几何退化和 TF 不可用。
+- 地图与规划：地图/路径过期、规划超时和规划失败。
+- 控制：跟踪误差、周期超限和控制进程崩溃。
+- 系统：消息队列、CPU、内存和温度。
+- 故障图：八类内置症状、根因排序、下一条低成本 Probe 和候选修复。
+- 输出：终端、JSON、Markdown、Mermaid 和 Graphviz DOT。
 
 ## 安装
 
@@ -27,124 +33,125 @@ python -m pip install .
 
 ```bash
 python -m pip install ".[dev]"
+ruff check .
 pytest
 ```
 
+安装后提供主命令 `slam-doctor`；旧命令 `esis` 继续兼容。
+
 ## 快速开始
 
-生成一段包含静止定位漂移的演示数据并诊断：
+直接诊断仓库内的导航振荡样例：
 
 ```bash
-esis simulate --sensor localization --fault drift --output drift.jsonl
-esis inspect drift.jsonl
+slam-doctor inspect examples/nav_oscillation.jsonl
+slam-doctor diagnose examples/nav_oscillation.jsonl \
+  --symptom NAV_OSCILLATION
 ```
 
-其他命令：
+生成 Markdown 报告：
 
 ```bash
-esis validate data.jsonl
-esis inspect data.jsonl --config configs/default.yaml
-esis inspect data.jsonl --format json --output report.json
-esis replay data.jsonl --speed 20
-robot-adapter | esis watch
+slam-doctor report examples/nav_oscillation.jsonl \
+  --symptom LOCAL_PLANNER_OSCILLATION \
+  --output report.md
 ```
 
-生成故障样例：
+导出故障图：
 
 ```bash
-esis simulate --sensor imu --fault frame-drop --output imu.jsonl
-esis simulate --sensor imu --fault latency --output latency.jsonl
-esis simulate --sensor gnss --fault gnss-loss --output gnss.jsonl
-esis simulate --sensor lidar --fault sparse --output lidar.jsonl
-esis simulate --sensor camera --fault low-features --output camera.jsonl
-esis simulate --sensor localization --fault pose-jump --output pose.jsonl
+slam-doctor graph --symptom POSE_JUMP --format mermaid
+slam-doctor graph --symptom CONTROLLER_CRASH --format dot \
+  --output controller-crash.dot
 ```
+
+列出内置症状：
+
+```bash
+slam-doctor symptoms
+```
+
+## 故障图
+
+```text
+System dependency DAG
+          ↓
+Interface contract findings
+          ↓
+Symptom
+  ├── Hypothesis A
+  │     ├── matched evidence
+  │     ├── next Probe
+  │     └── candidate remediation
+  └── Hypothesis B
+```
+
+内置症状：
+
+- `LOCALIZATION_DRIFT`
+- `POSE_JUMP`
+- `MAP_GHOSTING`
+- `GLOBAL_PLAN_FAILED`
+- `LOCAL_PLANNER_OSCILLATION`
+- `CONTROLLER_CRASH`
+- `END_TO_END_LATENCY`
+- `NETWORK_RECOVERY_FAILED`
+
+分数用于排障优先级，不表示经过统计校准的因果概率。缺少某类遥测时，相应假设会以低先验保留，而不是被错误排除。
 
 ## 标准观测格式
 
-每行是一个 JSON 对象：
+每行一个 JSON 对象：
 
 ```json
 {
-  "sensor_id": "imu_front",
-  "sensor_type": "imu",
+  "sensor_id": "localization",
+  "sensor_type": "slam",
   "timestamp": 1720000000.125,
-  "receive_timestamp": 1720000000.132,
+  "receive_timestamp": 1720000000.145,
   "sequence": 1024,
-  "payload_size": 96,
   "values": {
-    "accel_x": 0.12,
-    "accel_y": 0.01,
-    "accel_z": 9.81
+    "x": 2.1,
+    "y": 0.4,
+    "inlier_ratio": 0.58,
+    "degeneracy_score": 0.2,
+    "position_covariance": 0.04
   },
   "metadata": {
-    "frame_id": "imu_link"
+    "frame_id": "world",
+    "tf_available": true
   }
 }
 ```
 
-`timestamp` 表示数据产生时间，`receive_timestamp` 表示诊断侧收到数据的时间。二者必须
-使用同一时钟基准。`values` 中可以放传感器原始统计值或算法输出指标。
+支持 JSONL、CSV 和标准输入。ROS 2、rosbag2、MCAP、LTTng 或厂商 SDK 适配器只需转换到该格式，诊断核心不依赖 ROS。
 
-定位观测使用 `sensor_type` 为 `pose`、`localization` 或 `slam`，并在 `values` 中提供
-`x`、`y`。机器人确定静止时，可设置 `"metadata": {"stationary": true}`；也可以同时输入
-`wheel` 或 `wheel_odometry` 类型的速度观测，由引擎判断静止状态。
+## 其他命令
 
-CSV 必须包含 `sensor_id`、`sensor_type`、`timestamp` 等标准列。其他列会自动放入
-`values`；`values` 和 `metadata` 列本身可以保存 JSON 对象。
+```bash
+slam-doctor validate data.jsonl
+slam-doctor inspect data.jsonl --config configs/default.yaml
+slam-doctor inspect data.jsonl --format json --output health.json
+slam-doctor replay data.jsonl --speed 20
+robot-adapter | slam-doctor watch
 
-## 配置
-
-规则配置见 [`configs/default.yaml`](configs/default.yaml)。`defaults` 应用于所有数据源，
-`sensors` 可以按 `sensor_id` 覆盖阈值：
-
-```yaml
-defaults:
-  latency_warning_ms: 50
-  latency_critical_ms: 200
-  drop_warning_rate: 0.01
-
-sensors:
-  imu_front:
-    type: imu
-    expected_frequency_hz: 200
-    latency_warning_ms: 10
+slam-doctor simulate --sensor localization --fault drift --output drift.jsonl
+slam-doctor simulate --sensor imu --fault frame-drop --output imu.jsonl
+slam-doctor simulate --sensor lidar --fault sparse --output lidar.jsonl
 ```
 
-## 诊断流程
+## 设计边界
 
-```text
-JSONL / CSV / stdin
-        |
-        v
-结构校验与标准化
-        |
-        v
-按 sensor_id 维护有界滑动窗口
-        |
-        v
-通用规则 + 传感器规则 + 定位规则
-        |
-        v
-状态机：UNKNOWN / HEALTHY / DEGRADED / FAULT / RECOVERING / OFFLINE
-        |
-        v
-终端或 JSON 证据报告
-```
+- 核心只执行只读诊断，不修改参数、不重启节点、不发送控制指令。
+- Pose/路径注入类 Probe 必须在仿真、离线回放或受控测试条件下执行。
+- 单个异常通常不能证明唯一根因；工具通过跨层证据提高排序质量。
+- 生产环境应同时采集 source/publish/receive/consume 时间和统一 trace ID。
 
-诊断是流式执行的，每个传感器只保留有限窗口，不会将完整日志加载进内存。
+详细设计见：
 
-## 定位漂移的边界
+- [系统架构](docs/architecture.md)
+- [故障图指南](docs/fault-graph.md)
 
-ESIS 可以检测静止漂移、定位跳变以及多项上游退化征兆，但仅凭单一路径位姿无法证明
-漂移的唯一根因。实际项目应同时采集轮速、IMU、GNSS 状态、点云匹配分数、视觉跟踪率、
-TF/外参版本、定位协方差和计算负载，以形成更可靠的证据链。
+## License
 
-## 扩展适配器
-
-ROS 2、rosbag2、MCAP 或厂商 SDK 适配器只需将来源数据转换为标准观测 JSONL，再通过
-管道输入 `esis watch`。核心诊断层不依赖 ROS，便于部署到机器人本体、运维电脑或 CI。
-
-## 开源协议
-
-MIT License。欢迎提交 Issue 和 Pull Request。
+[MIT](LICENSE)

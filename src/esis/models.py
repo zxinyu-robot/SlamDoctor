@@ -70,3 +70,29 @@ class DiagnosticReport(BaseModel):
     ended_at: float | None
     overall_score: int
     sensors: list[SensorReport]
+
+
+class ProbeSpec(BaseModel):
+    id: str
+    title: str
+    instructions: str
+    expected: str
+    cost: int = Field(default=1, ge=1, le=5)
+
+
+class RankedHypothesis(BaseModel):
+    id: str
+    title: str
+    score: float = Field(ge=0, le=1)
+    rationale: str
+    matched_findings: list[str] = Field(default_factory=list)
+    probes: list[ProbeSpec] = Field(default_factory=list)
+    remediations: list[str] = Field(default_factory=list)
+
+
+class FaultDiagnosis(BaseModel):
+    symptom: str
+    summary: str
+    source: str
+    ranked_hypotheses: list[RankedHypothesis]
+    observed_findings: list[str]

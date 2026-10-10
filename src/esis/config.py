@@ -27,6 +27,16 @@ class Thresholds(BaseModel):
     gnss_min_satellites: int = Field(default=6, ge=0)
     lidar_min_points: int = Field(default=1000, ge=0)
     camera_min_features: int = Field(default=30, ge=0)
+    slam_min_inlier_ratio: float = Field(default=0.3, ge=0, le=1)
+    slam_degeneracy_warning: float = Field(default=0.8, ge=0, le=1)
+    path_max_age_ms: float = Field(default=200, ge=0)
+    planning_max_time_ms: float = Field(default=500, ge=0)
+    tracking_error_max_m: float = Field(default=0.5, ge=0)
+    controller_cycle_max_ms: float = Field(default=100, ge=0)
+    queue_depth_max: int = Field(default=5, ge=0)
+    cpu_warning_percent: float = Field(default=90, ge=0, le=100)
+    memory_warning_percent: float = Field(default=90, ge=0, le=100)
+    temperature_warning_c: float = Field(default=85, ge=0)
 
 
 class AppConfig(BaseModel):

@@ -46,6 +46,7 @@ class SensorRuntime:
     value_windows: dict[str, deque[float]] = field(default_factory=dict)
     last_timestamp: float | None = None
     last_sequence: int | None = None
+    last_frame_id: str | None = None
     last_pose: tuple[float, float] | None = None
     stationary_anchor: tuple[float, float] | None = None
     dropped: int = 0
@@ -137,6 +138,9 @@ class DiagnosticEngine:
         runtime.samples += 1
         runtime.last_timestamp = observation.timestamp
         runtime.last_sequence = observation.sequence
+        frame_id = observation.metadata.get("frame_id")
+        if isinstance(frame_id, str) and frame_id:
+            runtime.last_frame_id = frame_id
         runtime.timestamps.append(observation.timestamp)
         self._remember_values(runtime, observation)
         self.latest_by_type[observation.sensor_type] = observation
@@ -167,6 +171,40 @@ class DiagnosticEngine:
     def _evaluate(self, runtime: SensorRuntime, obs: Observation) -> list[Finding]:
         cfg = runtime.config
         result: list[Finding] = []
+        frame_id = obs.metadata.get("frame_id")
+        if (
+            isinstance(frame_id, str)
+            and frame_id
+            and runtime.last_frame_id is not None
+            and frame_id != runtime.last_frame_id
+        ):
+            result.append(
+                self._finding(
+                    runtime,
+                    obs,
+                    "FRAME_CHANGED",
+                    Severity.CRITICAL,
+                    "同一数据源的 frame_id 发生变化",
+                    "frame_id",
+                    frame_id,
+                    runtime.last_frame_id,
+                    ["TF 配置切换", "数据源复用错误", "节点重启后配置不一致"],
+                )
+            )
+        if obs.metadata.get("tf_available") is False:
+            result.append(
+                self._finding(
+                    runtime,
+                    obs,
+                    "TF_UNAVAILABLE",
+                    Severity.CRITICAL,
+                    "目标时间的 TF 不可用",
+                    "tf_available",
+                    False,
+                    "true",
+                    ["TF 树断裂", "时间外推失败", "静态外参未发布"],
+                )
+            )
         if runtime.last_timestamp is not None and obs.timestamp <= runtime.last_timestamp:
             result.append(
                 self._finding(
@@ -411,6 +449,222 @@ class DiagnosticEngine:
                 )
         elif obs.sensor_type in {"pose", "localization", "slam"}:
             findings.extend(self._localization_findings(runtime, obs))
+            findings.extend(self._slam_quality_findings(runtime, obs))
+        elif obs.sensor_type in {"planner", "path", "global_planner"}:
+            findings.extend(self._planner_findings(runtime, obs))
+        elif obs.sensor_type in {"controller", "local_planner"}:
+            findings.extend(self._controller_findings(runtime, obs))
+        elif obs.sensor_type in {"system", "runtime", "network"}:
+            findings.extend(self._runtime_findings(runtime, obs))
+        elif obs.sensor_type in {"map", "costmap"}:
+            age_ms = _number(values, "age_ms", "map_age_ms")
+            if age_ms is not None and age_ms > cfg.path_max_age_ms:
+                findings.append(
+                    self._finding(
+                        runtime,
+                        obs,
+                        "MAP_STALE",
+                        Severity.CRITICAL,
+                        "地图数据年龄超过阈值",
+                        "map_age_ms",
+                        round(age_ms, 3),
+                        f"<= {cfg.path_max_age_ms}",
+                        ["地图更新线程阻塞", "上游位姿或点云停止", "消息队列积压"],
+                    )
+                )
+        return findings
+
+    def _slam_quality_findings(
+        self, runtime: SensorRuntime, obs: Observation
+    ) -> list[Finding]:
+        findings: list[Finding] = []
+        inlier_ratio = _number(obs.values, "inlier_ratio", "match_inlier_ratio")
+        if inlier_ratio is not None and inlier_ratio < runtime.config.slam_min_inlier_ratio:
+            findings.append(
+                self._finding(
+                    runtime,
+                    obs,
+                    "SLAM_LOW_INLIERS",
+                    Severity.CRITICAL,
+                    "SLAM 有效匹配比例过低",
+                    "inlier_ratio",
+                    round(inlier_ratio, 4),
+                    f">= {runtime.config.slam_min_inlier_ratio}",
+                    ["场景几何退化", "初值错误", "点云去畸变或外参异常"],
+                )
+            )
+        degeneracy = _number(obs.values, "degeneracy_score")
+        if degeneracy is not None and degeneracy >= runtime.config.slam_degeneracy_warning:
+            findings.append(
+                self._finding(
+                    runtime,
+                    obs,
+                    "SLAM_DEGENERATE",
+                    Severity.WARNING,
+                    "SLAM 几何约束疑似退化",
+                    "degeneracy_score",
+                    round(degeneracy, 4),
+                    f"< {runtime.config.slam_degeneracy_warning}",
+                    ["长走廊或大平面", "有效法向方向单一", "观测范围不足"],
+                )
+            )
+        return findings
+
+    def _planner_findings(
+        self, runtime: SensorRuntime, obs: Observation
+    ) -> list[Finding]:
+        findings: list[Finding] = []
+        path_age = _number(obs.values, "path_age_ms", "age_ms")
+        if path_age is not None and path_age > runtime.config.path_max_age_ms:
+            findings.append(
+                self._finding(
+                    runtime,
+                    obs,
+                    "PATH_STALE",
+                    Severity.CRITICAL,
+                    "规划或控制正在消费过期路径",
+                    "path_age_ms",
+                    round(path_age, 3),
+                    f"<= {runtime.config.path_max_age_ms}",
+                    ["规划队列积压", "旧路径重复发布", "时间基准不一致"],
+                )
+            )
+        planning_time = _number(obs.values, "planning_time_ms")
+        if (
+            planning_time is not None
+            and planning_time > runtime.config.planning_max_time_ms
+        ):
+            findings.append(
+                self._finding(
+                    runtime,
+                    obs,
+                    "PLANNING_SLOW",
+                    Severity.WARNING,
+                    "规划耗时超过阈值",
+                    "planning_time_ms",
+                    round(planning_time, 3),
+                    f"<= {runtime.config.planning_max_time_ms}",
+                    ["地图规模过大", "搜索空间或分辨率不合理", "CPU 调度竞争"],
+                )
+            )
+        if obs.values.get("success") is False:
+            findings.append(
+                self._finding(
+                    runtime,
+                    obs,
+                    "PLANNING_FAILED",
+                    Severity.CRITICAL,
+                    "规划器报告失败",
+                    "success",
+                    False,
+                    "true",
+                    ["起终点不在自由连通域", "地图/TF 不一致", "规划超时"],
+                )
+            )
+        return findings
+
+    def _controller_findings(
+        self, runtime: SensorRuntime, obs: Observation
+    ) -> list[Finding]:
+        findings: list[Finding] = []
+        tracking_error = _number(obs.values, "tracking_error_m", "cross_track_error_m")
+        if (
+            tracking_error is not None
+            and tracking_error > runtime.config.tracking_error_max_m
+        ):
+            findings.append(
+                self._finding(
+                    runtime,
+                    obs,
+                    "TRACKING_ERROR",
+                    Severity.WARNING,
+                    "轨迹跟踪误差超过阈值",
+                    "tracking_error_m",
+                    round(tracking_error, 3),
+                    f"<= {runtime.config.tracking_error_max_m}",
+                    ["定位抖动", "路径曲率不连续", "控制参数与本体不匹配"],
+                )
+            )
+        cycle_time = _number(obs.values, "cycle_time_ms")
+        if cycle_time is not None and cycle_time > runtime.config.controller_cycle_max_ms:
+            findings.append(
+                self._finding(
+                    runtime,
+                    obs,
+                    "CONTROLLER_CYCLE_MISS",
+                    Severity.WARNING,
+                    "控制周期超过 deadline",
+                    "cycle_time_ms",
+                    round(cycle_time, 3),
+                    f"<= {runtime.config.controller_cycle_max_ms}",
+                    ["控制线程阻塞", "代价计算过重", "CPU 调度竞争"],
+                )
+            )
+        if obs.values.get("crashed") is True:
+            findings.append(
+                self._finding(
+                    runtime,
+                    obs,
+                    "CONTROLLER_CRASH",
+                    Severity.CRITICAL,
+                    "控制进程异常退出",
+                    "crashed",
+                    True,
+                    "false",
+                    ["插件异常", "非法输入或参数", "内存错误"],
+                )
+            )
+        return findings
+
+    def _runtime_findings(
+        self, runtime: SensorRuntime, obs: Observation
+    ) -> list[Finding]:
+        findings: list[Finding] = []
+        checks = (
+            (
+                "QUEUE_BACKLOG",
+                "消息队列深度超过阈值",
+                _number(obs.values, "queue_depth"),
+                runtime.config.queue_depth_max,
+                ["消费者处理不足", "QoS history 过深", "大消息阻塞实时流"],
+            ),
+            (
+                "CPU_SATURATION",
+                "CPU 使用率超过阈值",
+                _number(obs.values, "cpu_percent"),
+                runtime.config.cpu_warning_percent,
+                ["计算负载过高", "线程未隔离", "异常忙等"],
+            ),
+            (
+                "MEMORY_PRESSURE",
+                "内存使用率超过阈值",
+                _number(obs.values, "memory_percent"),
+                runtime.config.memory_warning_percent,
+                ["缓存无界增长", "点云/地图未淘汰", "内存泄漏"],
+            ),
+            (
+                "THERMAL_THROTTLE",
+                "设备温度超过阈值",
+                _number(obs.values, "temperature_c"),
+                runtime.config.temperature_warning_c,
+                ["散热不足", "持续高负载", "功耗模式不匹配"],
+            ),
+        )
+        for code, summary, actual, limit, causes in checks:
+            if actual is not None and actual > limit:
+                findings.append(
+                    self._finding(
+                        runtime,
+                        obs,
+                        code,
+                        Severity.WARNING,
+                        summary,
+                        code.lower(),
+                        round(actual, 3),
+                        f"<= {limit}",
+                        causes,
+                    )
+                )
         return findings
 
     def _localization_findings(self, runtime: SensorRuntime, obs: Observation) -> list[Finding]:
